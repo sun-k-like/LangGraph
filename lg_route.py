@@ -3,7 +3,8 @@ from typing import Literal
 from typing_extensions import TypedDict
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
-from langgraph.types import Command 
+from langgraph.types import Command, CachePolicy
+from langgraph.checkpoint.memory import MemorySaver
 
 load_dotenv()
 
@@ -72,13 +73,18 @@ builder.add_edge("long_response", END)
 builder.add_edge("short_response", END)
 builder.add_edge("escalate", END)
 
-app = builder.compile()
+memory = MemorySaver()
+app = builder.compile(checkpointer=memory)
 
-# 4. 검증 실행
-print("\n--- [테스트: FAQ 긴 응답] ---")
-res1 = app.invoke({"question": "서비스 가격 정책과 상세 요금제가 어떻게 되나요?", "processed": False})
-print(f"유형: {res1['response_type']} | 응답: {res1['response']}")
+# 4. 실행 및 캐시 검증
+config = {"configurable": {"thread_id": "user_session_123"}}
 
-print("\n--- [테스트: FAQ 짧은 응답] ---")
-res2 = app.invoke({"question": "요금이 얼마죠?", "processed": False})
-print(f"유형: {res2['response_type']} | 응답: {res2['response']}")
+print("\n--- [첫 번째 호출: 데이터 저장] ---")
+input_data = {"question": "이 서비스 가격 정책이 어떻게 되나요?", "processed": False}
+app.invoke(input_data, config)
+
+print("\n--- [두 번째 호출: 캐시 데이터 확인] ---")
+# 동일한 thread_id로 접속하여 저장된 상태를 가져옴
+snapshot = app.get_state(config)
+print(f"기록된 질문: {snapshot.values.get('question')}")
+print(f"처리 완료 여부(processed): {snapshot.values.get('processed')}")
