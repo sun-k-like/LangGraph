@@ -12,6 +12,7 @@ from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
+
 # 0. 환경 설정
 load_dotenv()
 
@@ -92,85 +93,64 @@ def keyword_search(query: str, top_k: int = 2):
     scores.sort(key=lambda x: x["score"], reverse=True)
     return scores[:top_k]
 
-# 5. 바이브 코딩 함수
+# 5. 바이브 코딩 함수 수정 부분
 def execute_vibe_code(user_request: str) -> str:
-    """
-    사용자 요청을 Python 코드로 변환하고 실행
-    """
-    print("--- [Vibe Coding] 코드 생성 중... ---")
-    
-    # LLM에게 코드 생성 요청
+    print("--- [Vibe Coding] 시각화 포함 코드 생성 중... ---")
+   
     code_prompt = ChatPromptTemplate.from_messages([
-        ("system", 
-         "당신은 Python 코드 생성 전문가입니다. "
-         "사용자의 요청을 분석하여 안전하게 실행 가능한 Python 코드를 생성하세요.\n\n"
-         "규칙:\n"
-         "1. 코드만 출력하고, 설명은 주석으로 작성\n"
-         "2. 위험한 코드(파일 삭제, 시스템 명령 등)는 생성하지 않음\n"
-         "3. 수학 계산, 데이터 처리, 간단한 알고리즘만 허용\n"
-         "4. 결과는 print()로 출력\n"
-         "5. 코드 블록(```)은 사용하지 말고 순수 코드만 출력\n\n"
-         "예시:\n"
-         "요청: 1부터 10까지 더하기\n"
-         "출력: result = sum(range(1, 11))\nprint(f'결과: {{result}}')\n"),
+        ("system", "당신은 Python 전문가입니다. 요청에 맞는 순수 파이썬 코드만 출력하세요. "
+                   "그래프를 그릴 때는 plt.savefig('output_chart.png')를 사용하세요."),
         ("user", "{request}")
     ])
     
     chain = code_prompt | llm
     response = chain.invoke({"request": user_request})
-    code = response.content.strip()
+    code = response.content.strip() 
     
-    # 코드 블록 제거 (혹시 포함되어 있을 경우)
-    if code.startswith("```python"):
-        code = code.replace("```python", "").replace("```", "").strip()
-    elif code.startswith("```"):
-        code = code.replace("```", "").strip()
-    
-    print(f"[생성된 코드]\n{code}\n")
-    
-    # 코드 실행 (안전한 환경에서)
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import builtins 
+
+    import matplotlib.font_manager as fm
+    plt.rcParams['font.family'] = 'Malgun Gothic'  # Windows
+    plt.rcParams['axes.unicode_minus'] = False  # 마이너스 기호 깨짐 방지
+
     try:
-        # 제한된 globals 사용 (보안)
         safe_globals = {
+            "plt": plt,
+            "np": np,
             "__builtins__": {
+                "__import__": builtins,
                 "print": print,
                 "range": range,
                 "sum": sum,
-                "len": len,
-                "max": max,
-                "min": min,
-                "abs": abs,
-                "round": round,
-                "sorted": sorted,
                 "list": list,
                 "dict": dict,
+                "len": len,
+                "getattr": getattr,
+                "hasattr": hasattr,
+                "isinstance": isinstance,
+                "type": type,
                 "str": str,
                 "int": int,
                 "float": float,
+                "tuple": tuple,
+                "set": set,
             }
         }
         
-        # 표준 출력 캡처
-        import io
-        import sys
-        output_buffer = io.StringIO()
-        sys.stdout = output_buffer
+        # 파일 초기화 및 실행 로직 동일
+        if os.path.exists("output_chart.png"):
+            os.remove("output_chart.png")
+
+        exec(code, {"plt": plt, "np": np})
         
-        # 코드 실행
-        exec(code, safe_globals)
-        
-        # 표준 출력 복원
-        sys.stdout = sys.__stdout__
-        result = output_buffer.getvalue()
-        
-        print(f"[실행 결과]\n{result}")
-        return result if result else "코드가 성공적으로 실행되었습니다."
+        if os.path.exists("output_chart.png"):
+            return "그래프를 성공적으로 생성했습니다! 'output_chart.png' 파일을 확인하세요."
+        return "코드가 실행되었습니다."
     
     except Exception as e:
-        sys.stdout = sys.__stdout__
-        error_msg = f"코드 실행 오류: {str(e)}"
-        print(f"[오류] {error_msg}")
-        return error_msg
+        return f"시각화 코드 실행 오류: {str(e)}"
 
 # 6. Node 함수 정의
 def classify_intent_node(state: State) -> Command[Literal["faq_node", "vibe_code_node", "escalate_node"]]:
