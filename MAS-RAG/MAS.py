@@ -1,11 +1,12 @@
 """
 멀티 에이전트 시스템 - LangGraph 기반 구현
 Supervisor 패턴을 활용한 리서치 & 작성 에이전트
-(OpenAI API 없이 DuckDuckGo 검색만 사용)
+(DuckDuckGo 검색 + 규칙 기반 스마트 요약)
 """
 
 import sqlite3
 import json
+import re
 from typing import TypedDict
 from datetime import datetime
 from ddgs import DDGS
@@ -49,6 +50,84 @@ def search_web(query: str, max_results: int = 5) -> list:
         return []
 
 
+def smart_summarize(text: str, max_length: int = 300) -> str:
+    """
+    규칙 기반 스마트 요약
+    
+    Args:
+        text: 요약할 텍스트
+        max_length: 최대 길이
+    
+    Returns:
+        요약된 텍스트
+    """
+    # 문장 단위로 분리
+    sentences = re.split(r'[.!?]\s+', text)
+    
+    # 중요 키워드 추출 (빈도 기반)
+    words = re.findall(r'\b\w+\b', text.lower())
+    word_freq = {}
+    for word in words:
+        if len(word) > 3:  # 3글자 이상만
+            word_freq[word] = word_freq.get(word, 0) + 1
+    
+    # 빈도 상위 키워드
+    top_keywords = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:10]
+    keywords = [k[0] for k in top_keywords]
+    
+    # 키워드가 많이 포함된 문장 선택
+    scored_sentences = []
+    for sent in sentences:
+        score = sum(1 for kw in keywords if kw in sent.lower())
+        scored_sentences.append((score, sent))
+    
+    # 점수 높은 순으로 정렬
+    scored_sentences.sort(reverse=True, key=lambda x: x[0])
+    
+    # 요약 생성
+    summary = []
+    current_length = 0
+    for score, sent in scored_sentences:
+        if current_length + len(sent) <= max_length:
+            summary.append(sent)
+            current_length += len(sent)
+        else:
+            break
+    
+    return '. '.join(summary) + '.' if summary else text[:max_length]
+
+
+def extract_key_points(search_results: list) -> list:
+    """
+    검색 결과에서 핵심 포인트 추출
+    
+    Args:
+        search_results: 검색 결과 리스트
+    
+    Returns:
+        핵심 포인트 리스트
+    """
+    key_points = []
+    
+    for result in search_results:
+        title = result.get('title', '')
+        body = result.get('body', '')
+        
+        # 제목에서 핵심 키워드 추출
+        if '트렌드' in title or 'AI' in title or '에이전트' in title:
+            key_points.append(f"• {title}")
+        
+        # 본문에서 핵심 문장 추출 (숫자, 퍼센트, 핵심 용어 포함)
+        sentences = re.split(r'[.!?]\s+', body)
+        for sent in sentences[:3]:  # 처음 3문장만
+            if any(indicator in sent for indicator in ['%', '증가', '감소', '예상', '전망', '핵심', '중요']):
+                summary = smart_summarize(sent, max_length=100)
+                if summary:
+                    key_points.append(f"  - {summary}")
+    
+    return key_points[:10]  # 상위 10개만
+
+
 def save_to_db(content: str, content_type: str) -> str:
     """
     SQLite DB에 콘텐츠 저장
@@ -87,7 +166,8 @@ def save_to_db(content: str, content_type: str) -> str:
 # ======================
 def research_agent(state: AgentState) -> AgentState:
     """
-    검색 → 요약 → 출처 기록 파이프라인 (규칙 기반)
+    검색 → 요약 → 출처 기록 파이프라인
+    출처 URL, 문서 제목, 관련 스니펫을 리스트로 저장
     """
     try:
         messages = state.get("messages", [])
@@ -95,22 +175,51 @@ def research_agent(state: AgentState) -> AgentState:
         
         print(f"\n🔍 리서치 에이전트: '{user_query}' 검색 중...")
         
-        # 검색 수행
-        search_results = search_web(user_query, max_results=3)
+        # 1. 검색 수행 (출처 URL, 제목, 스니펫 수집)
+        search_results = search_web(user_query, max_results=5)
         
         if not search_results:
             raise Exception("검색 결과 없음")
         
-        # 규칙 기반 요약 생성
-        research_notes = "## 검색 결과 요약\n\n"
-        research_notes += f"검색어: {user_query}\n"
-        research_notes += f"검색 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        # 2. 검색 결과를 구조화된 형식으로 변환
+        sources = []
+        all_content = ""
         
-        research_notes += "### 주요 발견 사항:\n"
         for i, result in enumerate(search_results, 1):
-            research_notes += f"{i}. {result['title']}\n"
-            research_notes += f"   - 내용: {result['body'][:200]}...\n"
-            research_notes += f"   - 출처: {result['href']}\n\n"
+            source_info = {
+                "title": result['title'],
+                "snippet": result['body'][:200],
+                "url": result['href']
+            }
+            sources.append(source_info)
+            all_content += f"{result['title']} {result['body']} "
+        
+        print("   📊 핵심 정보 추출 중...")
+        
+        # 3. 스마트 요약 생성
+        key_points = extract_key_points(search_results)
+        overall_summary = smart_summarize(all_content, max_length=500)
+        
+        # 4. 요약 내용과 출처를 결합하여 구조화된 리서치 노트 생성
+        research_notes = f"""## 검색 결과 분석
+
+### 검색 정보
+- 🔍 검색어: {user_query}
+- 📅 검색 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+- 📊 출처 수: {len(sources)}
+
+### 핵심 발견 사항
+{chr(10).join(key_points)}
+
+### 종합 요약
+{overall_summary}
+
+### 상세 출처 정보
+"""
+        for i, source in enumerate(sources, 1):
+            research_notes += f"\n**[{i}] {source['title']}**\n"
+            research_notes += f"- 내용: {source['snippet']}...\n"
+            research_notes += f"- 출처: {source['url']}\n"
         
         # DB 저장
         save_result = save_to_db(research_notes, "research")
@@ -122,8 +231,10 @@ def research_agent(state: AgentState) -> AgentState:
         state["next_agent"] = "writer"
         state["metadata"] = {
             "research_timestamp": datetime.now().isoformat(),
-            "sources_count": len(search_results),
-            "query": user_query
+            "sources_count": len(sources),
+            "sources": sources,
+            "query": user_query,
+            "key_points_count": len(key_points)
         }
         
         return state
@@ -142,31 +253,46 @@ def research_agent(state: AgentState) -> AgentState:
 # ======================
 def writer_agent(state: AgentState) -> AgentState:
     """
-    리서치 노트를 기반으로 구조화된 초안 생성 (템플릿 기반)
+    리서치 노트를 기반으로 구조화된 초안 생성
+    톤(전문적/친근함), 스타일, 길이 지시를 포함한 템플릿 구성
     """
     try:
         research_notes = state.get("research_notes", "")
         messages = state.get("messages", [])
         user_query = messages[0] if messages else "주제"
+        metadata = state.get("metadata", {})
         
         print(f"\n✍️ 작성 에이전트: 초안 생성 중...")
         
-        # 템플릿 기반 초안 생성
-        draft = f"""# {user_query}에 대한 리포트
+        # 템플릿 기반 블로그 글 작성 (전문적이면서 친근한 톤)
+        draft = f"""# {user_query}
 
-## 개요
-이 문서는 DuckDuckGo 검색을 통해 수집된 '{user_query}'에 대한 정보를 정리한 것입니다.
-
-## 리서치 내용
-{research_notes}
-
-## 결론
-위의 검색 결과를 통해 '{user_query}'에 대한 다양한 관점과 정보를 확인할 수 있었습니다.
-더 자세한 내용은 상단의 출처 링크를 참고하시기 바랍니다.
+## 들어가며
+최근 AI 분야에서 가장 주목받고 있는 '{user_query}'에 대해 알아보겠습니다. 
+{metadata.get('sources_count', 0)}개의 신뢰할 수 있는 출처를 통해 조사한 내용을 정리했습니다.
 
 ---
-*작성일: {datetime.now().strftime('%Y년 %m월 %d일 %H:%M')}*
-*작성 방식: 멀티 에이전트 시스템 (Supervisor 패턴)*
+
+{research_notes}
+
+---
+
+## 마치며
+위의 조사 결과를 통해 '{user_query}'에 대한 다양한 인사이트를 얻을 수 있었습니다. 
+더 자세한 내용은 상단의 출처 링크를 참고하시기 바랍니다.
+
+### 참고 자료
+"""
+        # 출처 링크 추가
+        sources = metadata.get('sources', [])
+        for i, source in enumerate(sources, 1):
+            draft += f"{i}. [{source['title']}]({source['url']})\n"
+        
+        draft += f"""
+---
+*작성일: {datetime.now().strftime('%Y년 %m월 %d일 %H:%M')}*  
+*작성 시스템: 멀티 에이전트 시스템 (Supervisor 패턴)*  
+*스타일: 전문적이면서 친근한 기술 블로그*
 """
         
         # DB 저장
@@ -266,7 +392,7 @@ def run_agent_system(user_input: str):
     멀티 에이전트 시스템 실행
     """
     print("\n" + "=" * 60)
-    print("🚀 멀티 에이전트 시스템 시작")
+    print("🚀 멀티 에이전트 시스템 시작 (스마트 규칙 기반)")
     print("=" * 60)
     
     graph = create_multi_agent_graph()
