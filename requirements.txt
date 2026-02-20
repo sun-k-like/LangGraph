@@ -6,8 +6,8 @@ langchain-community==0.0.38
 # LangChain Integrations
 langchain-openai==0.1.8
 
-# LangGraph
-langgraph==0.0.55
+# LangGraph (interrupt/Command 사용을 위해 0.2+ 필요)
+langgraph>=0.2.0
 
 # Environment Variables
 python-dotenv==1.0.1
@@ -17,3 +17,8 @@ pydantic==2.7.1
 
 # Token Counting
 tiktoken==0.6.0
+
+# FastAPI 서버 (fastapi_monitor.py)
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+httpx>=0.27.0
